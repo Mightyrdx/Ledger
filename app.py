@@ -9,7 +9,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Styling
 st.markdown("""
 <style>
     .main {
@@ -32,56 +31,74 @@ def parse_invoice(pdf_file):
     tax = 0.0
     grand_total = 0.0
     
+    full_text = ""
     with pdfplumber.open(pdf_file) as pdf:
-        full_text = ""
         for page in pdf.pages:
             text = page.extract_text()
             if text:
                 full_text += text + "\n"
-            
-            # Extract structured table grids
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    cleaned_row = [str(cell).strip() for cell in row if cell is not None and str(cell).strip() != ""]
-                    if len(cleaned_row) >= 3:
-                        # Skip header rows
-                        if any(kw in cleaned_row[0].lower() for kw in ['description', 'item', 'invoice', 'total']):
-                            continue
-                        try:
-                            # Parse numeric values from trailing columns
-                            desc = cleaned_row[0]
-                            qty = float(re.sub(r'[^0-9.]', '', cleaned_row[1])) if len(cleaned_row) > 1 and re.sub(r'[^0-9.]', '', cleaned_row[1]) else 1.0
-                            price = float(re.sub(r'[^0-9.]', '', cleaned_row[2])) if len(cleaned_row) > 2 and re.sub(r'[^0-9.]', '', cleaned_row[2]) else 0.0
-                            amt = float(re.sub(r'[^0-9.]', '', cleaned_row[-1])) if re.sub(r'[^0-9.]', '', cleaned_row[-1]) else qty * price
-                            
-                            line_items.append({
-                                "description": desc,
-                                "quantity": qty,
-                                "unit_price": price,
-                                "amount": amt
-                            })
-                        except ValueError:
-                            continue
 
-        # Extract Metadata using Regex
-        vendor_match = re.search(r'(?:Vendor Name|From|Supplier)[:\s]*([^\n]+)', full_text, re.IGNORECASE)
-        if vendor_match:
-            vendor_name = vendor_match.group(1).strip()
-            
-        inv_match = re.search(r'(?:Invoice Number|Invoice No|INV)[:#\s]*([A-Za-z0-9\-_]+)', full_text, re.IGNORECASE)
-        if inv_match:
-            invoice_no = inv_match.group(1).strip()
-            
-        sub_match = re.search(r'(?:Subtotal|Sub Total)[:\s]*[\$]?([0-9,]+\.[0-9]{2})', full_text, re.IGNORECASE)
-        if sub_match:
-            subtotal = float(sub_match.group(1).replace(',', ''))
-            
-        total_match = re.search(r'(?:Grand Total|Total Due|Total)[:\s]*[\$]?([0-9,]+\.[0-9]{2})', full_text, re.IGNORECASE)
-        if total_match:
-            grand_total = float(total_match.group(1).replace(',', ''))
+    lines = full_text.split('\n')
+    
+    # Exclude non-item metadata keywords
+    ignore_keywords = ['po no', 'place of supply', 'invoice date', 'due date', 'tax invoice', 'bill to', 'subtotal', 'grand total', 'tax', 'terms', 'net 30']
 
-    # Fallback if no table items were captured
+    for line in lines:
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in ignore_keywords):
+            continue
+            
+        # Match lines that contain numbers at the end (Description ... Qty ... Price ... Amount)
+        # Example pattern: Text tokens followed by numeric values
+        parts = re.split(r'\s{2,}|\t+', line.strip())
+        if len(parts) >= 3:
+            try:
+                # Check if the last or second-to-last part looks like a price/amount
+                potential_amount = parts[-1].replace('$', '').replace(',', '').strip()
+                amt = float(potential_amount)
+                
+                desc = parts[0]
+                qty = 1.0
+                price = amt
+                
+                if len(parts) >= 4:
+                    # Try parsing qty and unit price
+                    clean_qty = re.sub(r'[^0-9.]', '', parts[1])
+                    if clean_qty:
+                        qty = float(clean_qty)
+                    clean_price = re.sub(r'[^0-9.]', '', parts[2])
+                    if clean_price:
+                        price = float(clean_price)
+                
+                line_items.append({
+                    "description": desc,
+                    "quantity": qty,
+                    "unit_price": price,
+                    "amount": amt
+                })
+            except ValueError:
+                continue
+
+    # Extract Metadata using Regex
+    vendor_match = re.search(r'(?:Vendor Name|From|Supplier)[:\s]*([^\n]+)', full_text, re.IGNORECASE)
+    if vendor_match:
+        val = vendor_match.group(1).split('|')[-1].strip()
+        if val and not set(val) <= {'='}:
+            vendor_name = val
+        
+    inv_match = re.search(r'(?:Invoice Number|Invoice No|INV)[:#\s]*([A-Za-z0-9\-_]+)', full_text, re.IGNORECASE)
+    if inv_match:
+        invoice_no = inv_match.group(1).strip()
+        
+    sub_match = re.search(r'(?:Subtotal|Sub Total)[:\s]*[\$]?([0-9,]+\.[0-9]{2})', full_text, re.IGNORECASE)
+    if sub_match:
+        subtotal = float(sub_match.group(1).replace(',', ''))
+        
+    total_match = re.search(r'(?:Grand Total|Total Due|Total)[:\s]*[\$]?([0-9,]+\.[0-9]{2})', full_text, re.IGNORECASE)
+    if total_match:
+        grand_total = float(total_match.group(1).replace(',', ''))
+
+    # Fallback if text line parser found nothing
     if not line_items:
         line_items = [{
             "description": "Professional Consulting Services",
